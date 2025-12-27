@@ -4,211 +4,345 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>MiniScan Pro</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
     <style>
-      body { overscroll-behavior-y: contain; -webkit-tap-highlight-color: transparent; }
+      body { overscroll-behavior-y: contain; -webkit-tap-highlight-color: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
       .safe-top { padding-top: env(safe-area-inset-top); }
       .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .canvas-container { touch-action: none; }
+      .btn-active { color: #0ea5e9; }
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .animate-spin-slow { animation: spin 2s linear infinite; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen w-screen overflow-hidden">
     <div id="root" class="h-full w-full">
-        <!-- 読み込み中の表示 -->
-        <div id="loading" class="h-full w-full flex items-center justify-center flex-col gap-4">
-            <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-            <p class="text-slate-400 font-medium">起動中...</p>
+        <div class="h-full w-full flex items-center justify-center flex-col gap-4">
+            <div class="w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
+            <p class="text-slate-500 font-medium">MiniScan を起動中...</p>
         </div>
     </div>
 
-    <!-- エラー発生時のキャッチ -->
-    <script>
-      window.onerror = function(msg, url, line) {
-        document.getElementById('root').innerHTML = `
-          <div class="p-8 text-red-500">
-            <h1 class="font-bold text-xl mb-2">エラーが発生しました</h1>
-            <p class="text-sm">${msg}</p>
-            <p class="text-xs mt-4 text-slate-400">Line: ${line}</p>
-            <button onclick="location.reload()" class="mt-4 bg-slate-800 text-white px-4 py-2 rounded">再読み込み</button>
-          </div>
-        `;
-      };
-    </script>
+    <script type="module">
+        // モダンなブラウザ向けの安定した読み込み
+        import { h, render } from 'https://esm.sh/preact';
+        import { useState, useEffect, useRef, useMemo } from 'https://esm.sh/preact/hooks';
+        import htm from 'https://esm.sh/htm';
+        const html = htm.bind(h);
 
-    <script type="text/babel" data-type="module">
-        // 外部ライブラリを直接インポート
-        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
-        import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client';
+        // アイコンとライブラリ
         import { 
-          Camera, Upload, ImagePlus, Check, X, Trash2, Edit2, Loader2, Sparkles, 
-          Download, FileDown, ArrowLeft, Wand2, Image as ImageIcon, Layers, Settings 
-        } from 'https://esm.sh/lucide-react@0.292.0';
-        import { GoogleGenAI } from 'https://esm.sh/@google/genai@0.1.1';
-        import { jsPDF } from 'https://esm.sh/jspdf@2.5.1';
-        import { get, set } from 'https://esm.sh/idb-keyval@6.2.1';
+            Camera, Upload, ImagePlus, Check, X, Trash2, Edit2, Loader2, Sparkles, 
+            Download, FileDown, ArrowLeft, Wand2, Image as ImageIcon, Layers, Settings, ChevronRight 
+        } from 'https://esm.sh/lucide-react';
+        import { GoogleGenAI } from 'https://esm.sh/@google/genai';
+        import { jsPDF } from 'https://esm.sh/jspdf';
+        import { get, set } from 'https://esm.sh/idb-keyval';
 
-        // --- 以下、ロジック部分は前のコードと同じ ---
-        
-        const distance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        // --- 数学ユーティリティ: 歪み補正用 ---
+        const calcDistance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
 
-        function solveHomography(x0, y0, x1, y1, x2, y2, x3, y3, u0, v0, u1, v1, u2, v2, u3, v3) {
-            let a = [[x0, y0, 1, 0, 0, 0, -x0*u0, -y0*u0], [x1, y1, 1, 0, 0, 0, -x1*u1, -y1*u1], [x2, y2, 1, 0, 0, 0, -x2*u2, -y2*u2], [x3, y3, 1, 0, 0, 0, -x3*u3, -y3*u3], [0, 0, 0, x0, y0, 1, -x0*v0, -y0*v0], [0, 0, 0, x1, y1, 1, -x1*v1, -y1*v1], [0, 0, 0, x2, y2, 1, -x2*v2, -y2*v2], [0, 0, 0, x3, y3, 1, -x3*v3, -y3*v3]];
+        function getHomography(x0, y0, x1, y1, x2, y2, x3, y3, u0, v0, u1, v1, u2, v2, u3, v3) {
+            let a = [
+                [x0, y0, 1, 0, 0, 0, -x0*u0, -y0*u0], [x1, y1, 1, 0, 0, 0, -x1*u1, -y1*u1],
+                [x2, y2, 1, 0, 0, 0, -x2*u2, -y2*u2], [x3, y3, 1, 0, 0, 0, -x3*u3, -y3*u3],
+                [0, 0, 0, x0, y0, 1, -x0*v0, -y0*v0], [0, 0, 0, x1, y1, 1, -x1*v1, -y1*v1],
+                [0, 0, 0, x2, y2, 1, -x2*v2, -y2*v2], [0, 0, 0, x3, y3, 1, -x3*v3, -y3*v3]
+            ];
             let b = [u0, u1, u2, u3, v0, v1, v2, v3];
             for(let i=0; i<8; i++) {
-                let maxRow = i;
-                for(let k=i+1; k<8; k++) if(Math.abs(a[k][i]) > Math.abs(a[maxRow][i])) maxRow = k;
-                [a[i], a[maxRow]] = [a[maxRow], a[i]]; [b[i], b[maxRow]] = [b[maxRow], b[i]];
+                let max = i;
+                for(let k=i+1; k<8; k++) if(Math.abs(a[k][i]) > Math.abs(a[max][i])) max = k;
+                [a[i], a[max]] = [a[max], a[i]]; [b[i], b[max]] = [b[max], b[i]];
                 for(let k=i+1; k<8; k++) {
                     let c = -a[k][i]/a[i][i];
                     for(let j=i; j<8; j++) a[k][j] = (i===j) ? 0 : a[k][j] + c * a[i][j];
                     b[k] += c * b[i];
                 }
             }
-            let x = new Array(8).fill(0);
-            for(let i=7; i>-1; i--) { let sum = 0; for(let j=i+1; j<8; j++) sum += a[i][j] * x[j]; x[i] = (b[i] - sum) / a[i][i]; }
-            return [...x, 1];
+            let res = new Array(8).fill(0);
+            for(let i=7; i>-1; i--) {
+                let s = 0; for(let j=i+1; j<8; j++) s += a[i][j] * res[j];
+                res[i] = (b[i] - s) / a[i][i];
+            }
+            return [...res, 1];
         }
 
-        const processImage = (img, corners, filter) => {
+        const renderScannedImage = (img, corners, filterType) => {
             const w = img.width, h = img.height;
             const pts = corners.map(p => ({ x: p.x * w, y: p.y * h }));
-            const destW = Math.max(distance(pts[0], pts[1]), distance(pts[3], pts[2]));
-            const destH = Math.max(distance(pts[0], pts[3]), distance(pts[1], pts[2]));
-            const canvas = document.createElement('canvas'); canvas.width = destW; canvas.height = destH;
+            const dW = Math.max(calcDistance(pts[0], pts[1]), calcDistance(pts[3], pts[2]));
+            const dH = Math.max(calcDistance(pts[0], pts[3]), calcDistance(pts[1], pts[2]));
+            
+            const canvas = document.createElement('canvas'); canvas.width = dW; canvas.height = dH;
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            
             const srcCanvas = document.createElement('canvas'); srcCanvas.width = w; srcCanvas.height = h;
             const srcCtx = srcCanvas.getContext('2d'); srcCtx.drawImage(img, 0, 0);
             const sData = srcCtx.getImageData(0, 0, w, h).data;
-            const dstData = ctx.createImageData(destW, destH);
+            const dstData = ctx.createImageData(dW, dH);
             const dData = dstData.data;
-            const H = solveHomography(0, 0, destW, 0, destW, destH, 0, destH, pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y, pts[3].x, pts[3].y);
-            for (let y = 0; y < destH; y++) {
-                for (let x = 0; x < destW; x++) {
+
+            const H = getHomography(0, 0, dW, 0, dW, dH, 0, dH, pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y, pts[3].x, pts[3].y);
+
+            for (let y = 0; y < dH; y++) {
+                for (let x = 0; x < dW; x++) {
                     const div = H[6] * x + H[7] * y + 1;
-                    const u = (H[0] * x + H[1] * y + H[2]) / div; const v = (H[3] * x + H[4] * y + H[5]) / div;
+                    const u = (H[0] * x + H[1] * y + H[2]) / div;
+                    const v = (H[3] * x + H[4] * y + H[5]) / div;
                     if (u >= 0 && u < w && v >= 0 && v < h) {
-                        const sIdx = (Math.floor(v) * w + Math.floor(u)) * 4; const dIdx = (y * destW + x) * 4;
+                        const sIdx = (Math.floor(v) * w + Math.floor(u)) * 4;
+                        const dIdx = (y * dW + x) * 4;
                         let r = sData[sIdx], g = sData[sIdx+1], b = sData[sIdx+2];
-                        if (filter === 'grayscale') { const gray = 0.3*r + 0.59*g + 0.11*b; r=g=b=gray; }
-                        else if (filter === 'bw') { const gray = 0.3*r + 0.59*g + 0.11*b; const v=gray>130?255:0; r=g=b=v; }
-                        else if (filter === 'magic') { r = Math.min(255, r * 1.4 - 40); g = Math.min(255, g * 1.4 - 40); b = Math.min(255, b * 1.4 - 40); }
-                        dData[dIdx]=r; dData[dIdx+1]=g; dData[dIdx+2]=b; dData[dIdx+3]=255;
+
+                        if (filterType === 'magic') {
+                            const luma = 0.3 * r + 0.59 * g + 0.11 * b;
+                            r = Math.min(255, r * 1.5 - 50);
+                            g = Math.min(255, g * 1.5 - 50);
+                            b = Math.min(255, b * 1.5 - 50);
+                        } else if (filterType === 'bw') {
+                            const luma = 0.3 * r + 0.59 * g + 0.11 * b;
+                            const res = luma > 130 ? 255 : 0;
+                            r = g = b = res;
+                        }
+                        dData[dIdx] = r; dData[dIdx+1] = g; dData[dIdx+2] = b; dData[dIdx+3] = 255;
                     }
                 }
             }
-            ctx.putImageData(dstData, 0, 0); return canvas.toDataURL('image/jpeg', 0.85);
+            ctx.putImageData(dstData, 0, 0);
+            return canvas.toDataURL('image/jpeg', 0.85);
         };
 
-        const detectEdges = async (base64, key) => {
-            if (!key) return [{x:0.1,y:0.1},{x:0.9,y:0.1},{x:0.9,y:0.9},{x:0.1,y:0.9}];
+        // --- AI ロジック: Gemini 1.5 Flash ---
+        async function runEdgeDetection(base64, apiKey) {
+            const fallback = [{x:0.1,y:0.1},{x:0.9,y:0.1},{x:0.9,y:0.9},{x:0.1,y:0.9}];
+            if (!apiKey) return fallback;
             try {
-                const ai = new GoogleGenAI({ apiKey: key });
-                const model = ai.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
-                const result = await model.generateContent(["Return JSON with 4 corners {corners:[{x,y},...]} (TL,TR,BR,BL) of document in image. Coordinates 0-1.", { inlineData: { mimeType: "image/jpeg", data: base64.split(',')[1] } }]);
-                return JSON.parse(result.response.text().match(/\{.*\}/s)[0]).corners;
-            } catch (e) { return [{x:0.1,y:0.1},{x:0.9,y:0.1},{x:0.9,y:0.9},{x:0.1,y:0.9}]; }
-        };
+                const genAI = new GoogleGenAI(apiKey);
+                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+                const result = await model.generateContent([
+                    "Identify the 4 corners of the document in the image. Return ONLY a JSON object: {\"corners\": [{\"x\": 0.12, \"y\": 0.05}, ...]} coordinates between 0 and 1. Order: Top-Left, Top-Right, Bottom-Right, Bottom-Left.",
+                    { inlineData: { mimeType: "image/jpeg", data: base64.split(',')[1] } }
+                ]);
+                const text = await result.response.text();
+                const data = JSON.parse(text.match(/\{.*\}/s)[0]);
+                return data.corners || fallback;
+            } catch (err) {
+                console.error("AI Error:", err);
+                return fallback;
+            }
+        }
 
-        const SettingsModal = ({ apiKey, onSave, onClose }) => {
-            const [val, setVal] = useState(apiKey);
-            return (
-                <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur flex items-center justify-center p-6">
-                    <div className="bg-white rounded-2xl w-full max-w-xs p-6 shadow-xl">
-                        <h3 className="font-bold mb-4">API設定</h3>
-                        <input type="password" value={val} onChange={e=>setVal(e.target.value)} placeholder="Gemini API Key" className="w-full p-3 bg-slate-100 rounded-xl mb-4 outline-none border-2 focus:border-brand-500" />
-                        <div className="flex gap-2"><button onClick={onClose} className="flex-1 text-slate-500">閉じる</button><button onClick={()=>onSave(val)} className="flex-1 bg-brand-600 text-white py-2 rounded-xl font-bold">保存</button></div>
-                    </div>
-                </div>
-            );
-        };
-
+        // --- コンポーネント: 消しゴムマジック ---
         const MagicEraser = ({ imageUrl, onSave, onCancel }) => {
-            const canvasRef = useRef(null); const [isDrawing, setIsDrawing] = useState(false); const [color, setColor] = useState('#ffffff');
+            const canvasRef = useRef(null);
+            const [isDrawing, setIsDrawing] = useState(false);
+            const [bgFill, setBgFill] = useState('#ffffff');
+
             useEffect(() => {
-                const img = new Image(); img.onload = () => {
+                const img = new Image();
+                img.onload = () => {
                     const c = canvasRef.current; c.width = img.width; c.height = img.height;
                     const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
-                    const s = ctx.getImageData(img.width/2, img.height/2, 1, 1).data; setColor(`rgb(${s[0]},${s[1]},${s[2]})`);
-                }; img.src = imageUrl;
+                    const sample = ctx.getImageData(img.width/2, img.height/2, 1, 1).data;
+                    setBgFill(`rgb(${sample[0]},${sample[1]},${sample[2]})`);
+                };
+                img.src = imageUrl;
             }, [imageUrl]);
-            const draw = (e) => {
-                if(!isDrawing) return; const rect = canvasRef.current.getBoundingClientRect();
-                const x = ((e.touches?.[0].clientX || e.clientX) - rect.left) * (canvasRef.current.width/rect.width);
-                const y = ((e.touches?.[0].clientY || e.clientY) - rect.top) * (canvasRef.current.height/rect.height);
-                const ctx = canvasRef.current.getContext('2d'); ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, 30, 0, Math.PI*2); ctx.fill();
+
+            const handleDraw = (e) => {
+                if(!isDrawing) return;
+                const rect = canvasRef.current.getBoundingClientRect();
+                const touch = e.touches ? e.touches[0] : e;
+                const x = (touch.clientX - rect.left) * (canvasRef.current.width / rect.width);
+                const y = (touch.clientY - rect.top) * (canvasRef.current.height / rect.height);
+                const ctx = canvasRef.current.getContext('2d');
+                ctx.fillStyle = bgFill; ctx.beginPath(); ctx.arc(x, y, 35, 0, Math.PI*2); ctx.fill();
             };
-            return (
-                <div className="fixed inset-0 z-50 bg-black flex flex-col">
-                    <div className="p-4 flex justify-between items-center bg-slate-900 text-white"><button onClick={onCancel}><X/></button><span className="font-bold">指消しツール</span><button onClick={()=>onSave(canvasRef.current.toDataURL('image/jpeg'))} className="text-brand-500"><Check/></button></div>
-                    <div className="flex-1 flex items-center justify-center p-2 touch-none"><canvas ref={canvasRef} className="max-w-full max-h-full" onMouseDown={()=>setIsDrawing(true)} onMouseMove={draw} onMouseUp={()=>setIsDrawing(false)} onTouchStart={()=>setIsDrawing(true)} onTouchMove={draw} onTouchEnd={()=>setIsDrawing(false)} /></div>
+
+            return html`
+                <div class="fixed inset-0 z-50 bg-black flex flex-col">
+                    <div class="p-4 flex justify-between items-center bg-slate-900 text-white">
+                        <button onClick=${onCancel}><${X}/></button>
+                        <span class="font-bold">指消しツール</span>
+                        <button onClick=${() => onSave(canvasRef.current.toDataURL('image/jpeg'))} class="text-sky-400"><${Check}/></button>
+                    </div>
+                    <div class="flex-1 flex items-center justify-center p-2 canvas-container"
+                         onMouseDown=${() => setIsDrawing(true)} onMouseMove=${handleDraw} onMouseUp=${() => setIsDrawing(false)}
+                         onTouchStart=${() => setIsDrawing(true)} onTouchMove=${handleDraw} onTouchEnd=${() => setIsDrawing(false)}>
+                        <canvas ref=${canvasRef} class="max-w-full max-h-full shadow-2xl bg-white" />
+                    </div>
                 </div>
-            );
+            `;
         };
 
-        const CropEditor = ({ imageUrl, corners: init, onSave, onCancel }) => {
-            const [pts, setPts] = useState(init); const [active, setActive] = useState(null); const container = useRef(null);
-            const move = (e) => { if(active===null) return; const r = container.current.getBoundingClientRect(); const x = Math.max(0, Math.min(1, ((e.touches?.[0].clientX || e.clientX) - r.left) / r.width)); const y = Math.max(0, Math.min(1, ((e.touches?.[0].clientY || e.clientY) - r.top) / r.height)); const n = [...pts]; n[active] = {x, y}; setPts(n); };
-            return (
-                <div className="fixed inset-0 z-50 bg-black flex flex-col">
-                    <div className="p-4 flex justify-between text-white"><button onClick={onCancel}><X/></button><span className="font-bold">範囲指定</span><button onClick={()=>onSave(pts)} className="text-brand-500"><Check/></button></div>
-                    <div className="flex-1 relative flex items-center justify-center p-4 touch-none" ref={container} onMouseMove={move} onTouchMove={move} onMouseUp={()=>setActive(null)} onTouchEnd={()=>setActive(null)}><div className="relative inline-block"><img src={imageUrl} className="max-h-[70vh] pointer-events-none" /><svg className="absolute inset-0 w-full h-full pointer-events-none"><polygon points={pts.map(p=>`${p.x*100}%,${p.y*100}%`).join(' ')} fill="rgba(14,165,233,0.3)" stroke="#0ea5e9" strokeWidth="2" /></svg>{pts.map((p,i)=><div key={i} className="absolute w-8 h-8 -ml-4 -mt-4 bg-brand-500 border-2 border-white rounded-full shadow-xl" style={{left:`${p.x*100}%`, top:`${p.y*100}%`}} onMouseDown={()=>setActive(i)} onTouchStart={()=>setActive(i)} />)}</div></div>
-                </div>
-            );
-        };
+        // --- メインアプリ ---
+        const App = () => {
+            const [pages, setPages] = useState([]);
+            const [apiKey, setApiKey] = useState("");
+            const [editId, setEditId] = useState(null);
+            const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+            const [loading, setLoading] = useState(false);
+            const [eraserMode, setEraserMode] = useState(false);
 
-        function App() {
-            const [pages, setPages] = useState([]); const [apiKey, setApiKey] = useState(""); const [editId, setEditId] = useState(null); const [mode, setMode] = useState('list'); const [loading, setLoading] = useState(false);
-            useEffect(() => { get('miniscan-pages').then(v => v && setPages(v)); get('miniscan-key').then(v => v && setApiKey(v)); }, []);
-            useEffect(() => { set('miniscan-pages', pages); }, [pages]);
-            const handleUpload = async (e) => {
-                if(!apiKey) { alert("先にAPIキーを設定してください"); return; }
-                setLoading(true); const files = Array.from(e.target.files);
-                for(let f of files) {
-                    const reader = new FileReader(); reader.readAsDataURL(f);
-                    await new Promise(res => reader.onload = async () => {
-                        const base64 = reader.result; const corners = await detectEdges(base64, apiKey); const img = new Image(); img.src = base64; await new Promise(r => img.onload = r);
-                        const preview = processImage(img, corners, 'original'); setPages(prev => [...prev, { id: Date.now()+Math.random(), original: base64, preview, corners, filter: 'original' }]); res();
+            useEffect(() => {
+                get('miniscan-key').then(k => k && setApiKey(k));
+                get('miniscan-data').then(d => d && setPages(d));
+            }, []);
+
+            useEffect(() => { set('miniscan-data', pages); }, [pages]);
+
+            const onFileSelect = async (e) => {
+                if(!apiKey) { setIsSettingsOpen(true); return; }
+                setLoading(true);
+                const files = Array.from(e.target.files);
+                for(let file of files) {
+                    const base64 = await new Promise(r => {
+                        const rd = new FileReader(); rd.onload = () => r(rd.result); rd.readAsDataURL(file);
                     });
+                    const corners = await runEdgeDetection(base64, apiKey);
+                    const img = new Image(); img.src = base64;
+                    await new Promise(r => img.onload = r);
+                    const preview = renderScannedImage(img, corners, 'original');
+                    setPages(prev => [...prev, { id: Math.random().toString(36), original: base64, preview, corners, filter: 'original' }]);
                 }
                 setLoading(false);
             };
-            const applyAction = async (newPreview, newCorners = null, newFilter = null) => { setPages(prev => prev.map(p => p.id === editId ? { ...p, preview: newPreview, ...(newCorners && { corners: newCorners }), ...(newFilter && { filter: newFilter }) } : p)); };
-            const exportPDF = () => { const doc = new jsPDF(); pages.forEach((p, i) => { if(i>0) doc.addPage(); doc.addImage(p.preview, 'JPEG', 0, 0, 210, 297); }); doc.save("scan.pdf"); };
+
+            const handleFilter = (type) => {
+                const active = pages.find(p => p.id === editId);
+                const img = new Image();
+                img.onload = () => {
+                    const newPreview = renderScannedImage(img, active.corners, type);
+                    setPages(prev => prev.map(p => p.id === editId ? { ...p, preview: newPreview, filter: type } : p));
+                };
+                img.src = active.original;
+            };
+
+            const downloadPDF = () => {
+                const pdf = new jsPDF();
+                pages.forEach((p, i) => {
+                    if(i > 0) pdf.addPage();
+                    pdf.addImage(p.preview, 'JPEG', 0, 0, 210, 297);
+                });
+                pdf.save("myscan.pdf");
+            };
+
             const active = pages.find(p => p.id === editId);
-            if(editId) {
-                if(mode==='crop') return <CropEditor imageUrl={active.original} corners={active.corners} onCancel={()=>setMode('list')} onSave={pts => { const img = new Image(); img.onload = () => { applyAction(processImage(img, pts, active.filter), pts); setMode('list'); }; img.src = active.original; }} />;
-                if(mode==='eraser') return <MagicEraser imageUrl={active.preview} onCancel={()=>setMode('list')} onSave={url => { applyAction(url); setMode('list'); }} />;
-                return (
-                    <div className="flex flex-col h-screen bg-slate-900 text-white">
-                        <div className="p-4 pt-safe-top flex justify-between bg-slate-800"><button onClick={()=>setEditId(null)}><ArrowLeft/></button><span className="font-bold">編集</span><button onClick={()=>setMode('crop')} className="text-brand-400">切り取り</button></div>
-                        <div className="flex-1 flex items-center justify-center p-4"><img src={active.preview} className="max-h-full shadow-2xl" /></div>
-                        <div className="p-6 bg-slate-800 flex justify-around safe-bottom">
-                            {[{id:'original', l:'原画', i:<ImageIcon size={20}/>}, {id:'magic', l:'強調', i:<Sparkles size={20}/>}, {id:'bw', l:'白黒', i:<FileDown size={20}/>}, {id:'eraser', l:'指消し', i:<Wand2 size={20}/>}].map(f => (
-                                <button key={f.id} className={`flex flex-col items-center gap-1 ${active.filter===f.id?'text-brand-400':'text-slate-400'}`} onClick={()=>{ if(f.id==='eraser') { setMode('eraser'); return; } const img = new Image(); img.onload = () => applyAction(processImage(img, active.corners, f.id), null, f.id); img.src = active.original; }}>
-                                    <div className="p-3 bg-slate-700 rounded-full">{f.i}</div><span className="text-[10px]">{f.l}</span>
+
+            if (eraserMode && active) {
+                return html`<${MagicEraser} imageUrl=${active.preview} onCancel=${() => setEraserMode(false)} onSave=${(url) => {
+                    setPages(prev => prev.map(p => p.id === editId ? { ...p, preview: url } : p));
+                    setEraserMode(false);
+                }} />`;
+            }
+
+            if (editId && active) {
+                return html`
+                    <div class="flex flex-col h-screen bg-slate-950 text-white">
+                        <div class="p-4 pt-safe-top flex justify-between items-center bg-slate-900/50">
+                            <button onClick=${() => setEditId(null)}><${ArrowLeft}/></button>
+                            <span class="font-bold">書類を編集</span>
+                            <div class="w-8"></div>
+                        </div>
+                        <div class="flex-1 flex items-center justify-center p-4">
+                            <img src=${active.preview} class="max-h-full shadow-2xl border border-white/10" />
+                        </div>
+                        <div class="p-6 pb-12 bg-slate-900 flex justify-around items-center safe-bottom">
+                            ${[
+                                { id: 'original', label: '原画', icon: ImageIcon },
+                                { id: 'magic', label: '強調', icon: Sparkles },
+                                { id: 'bw', label: '白黒', icon: FileDown },
+                                { id: 'eraser', label: '消す', icon: Wand2 }
+                            ].map(btn => html`
+                                <button key=${btn.id} class="flex flex-col items-center gap-1 ${active.filter === btn.id ? 'text-sky-400' : 'text-slate-500'}"
+                                        onClick=${() => btn.id === 'eraser' ? setEraserMode(true) : handleFilter(btn.id)}>
+                                    <div class="p-3 bg-slate-800 rounded-2xl"><${btn.icon} size=${24} /></div>
+                                    <span class="text-[10px] font-bold">${btn.label}</span>
                                 </button>
-                            ))}
+                            `)}
                         </div>
                     </div>
-                );
+                `;
             }
-            return (
-                <div className="flex flex-col h-screen bg-slate-50">
-                    <header className="bg-white p-4 pt-safe-top shadow-sm flex justify-between items-center"><div className="flex items-center gap-2 font-black text-xl text-brand-600"><Layers fill="currentColor"/> MiniScan</div><div className="flex gap-2"><button onClick={()=>setMode('settings')} className={`p-2 rounded-full ${!apiKey?'bg-red-100 text-red-500 animate-pulse':'text-slate-400'}`}><Settings size={20}/></button>{pages.length>0 && <button onClick={exportPDF} className="bg-slate-800 text-white px-4 py-1 rounded-lg text-sm font-bold flex items-center gap-1"><Download size={14}/> PDF</button>}</div></header>
-                    <main className="flex-1 overflow-y-auto p-4 pb-24">
-                        {pages.length===0 ? (<div className="h-full flex flex-col items-center justify-center opacity-50"><ImagePlus size={64} className="mb-4 text-slate-300"/><p>書類をスキャンしてください</p></div>) : (<div className="grid grid-cols-2 gap-4">{pages.map((p,i) => (<div key={p.id} className="relative aspect-[3/4] bg-white rounded-xl shadow-sm border overflow-hidden group"><img src={p.preview} className="w-full h-full object-cover" onClick={()=>setEditId(p.id)} /><div className="absolute top-1 left-1 bg-black/50 text-white text-[10px] px-1 rounded">{i+1}</div><button className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100" onClick={()=>setPages(ps=>ps.filter(x=>x.id!==p.id))}><Trash2 size={12}/></button></div>))}</div>)}
-                    </main>
-                    <div className="fixed bottom-8 left-0 right-0 flex justify-center safe-bottom pointer-events-none"><label className="w-16 h-16 bg-brand-600 text-white rounded-full shadow-xl flex items-center justify-center cursor-pointer active:scale-90 transition-transform pointer-events-auto">{loading ? <Loader2 className="animate-spin"/> : <Camera size={32}/><input type="file" multiple accept="image/*" className="hidden" onChange={handleUpload} disabled={loading} />}</label></div>
-                    {mode==='settings' && <SettingsModal apiKey={apiKey} onClose={()=>setMode('list')} onSave={v=>{setApiKey(v); set('miniscan-key',v); setMode('list');}} />}
-                </div>
-            );
-        }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+            return html`
+                <div class="flex flex-col h-screen bg-slate-50">
+                    <header class="bg-white/80 backdrop-blur-md p-4 pt-safe-top shadow-sm flex justify-between items-center z-10">
+                        <div class="flex items-center gap-2 text-sky-600">
+                            <${Layers} fill="currentColor" size=${24} />
+                            <h1 class="text-xl font-black tracking-tighter">MiniScan Pro</h1>
+                        </div>
+                        <div class="flex gap-3">
+                            <button onClick=${() => setIsSettingsOpen(true)} class="p-2 ${!apiKey ? 'text-red-500 animate-pulse bg-red-50' : 'text-slate-400'} rounded-full">
+                                <${Settings} size=${22} />
+                            </button>
+                            ${pages.length > 0 && html`
+                                <button onClick=${downloadPDF} class="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 active:scale-95 transition-transform">
+                                    <${Download} size=${16} /> 保存
+                                </button>
+                            `}
+                        </div>
+                    </header>
+
+                    <main class="flex-1 overflow-y-auto p-4 pb-32 no-scrollbar">
+                        ${pages.length === 0 ? html`
+                            <div class="h-full flex flex-col items-center justify-center text-slate-300">
+                                <div class="w-32 h-32 bg-slate-100 rounded-full flex items-center justify-center mb-6">
+                                    <${ImagePlus} size=${48} />
+                                </div>
+                                <p class="font-bold">書類をスキャンしてください</p>
+                                <p class="text-xs mt-1 text-slate-400 text-center">右上の設定からGemini APIキーを入力して起動します</p>
+                            </div>
+                        ` : html`
+                            <div class="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                                ${pages.map((p, idx) => html`
+                                    <div key=${p.id} class="relative group aspect-[3/4.2] bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden ring-offset-4 ring-sky-500 active:ring-2 transition-all">
+                                        <img src=${p.preview} class="w-full h-full object-cover" onClick=${() => setEditId(p.id)} />
+                                        <div class="absolute top-2 left-2 bg-black/40 backdrop-blur-md text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full">${idx + 1}</div>
+                                        <button class="absolute top-2 right-2 p-1.5 bg-red-500/90 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                                                onClick=${(e) => { e.stopPropagation(); setPages(prev => prev.filter(x => x.id !== p.id)); }}>
+                                            <${Trash2} size=${14} />
+                                        </button>
+                                    </div>
+                                `)}
+                            </div>
+                        `}
+                    </main>
+
+                    <div class="fixed bottom-10 left-0 right-0 flex justify-center pointer-events-none safe-bottom">
+                        <label class="w-20 h-20 bg-sky-500 text-white rounded-full shadow-2xl shadow-sky-200 flex items-center justify-center cursor-pointer active:scale-90 transition-transform pointer-events-auto border-4 border-white">
+                            ${loading ? html`<${Loader2} class="animate-spin" size=${32} />` : html`<${Camera} size=${36} />`}
+                            <input type="file" multiple accept="image/*" class="hidden" onChange=${onFileSelect} disabled=${loading} />
+                        </label>
+                    </div>
+
+                    ${isSettingsOpen && html`
+                        <div class="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-6 animate-in fade-in duration-200">
+                            <div class="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-8 shadow-2xl animate-in slide-in-from-bottom-10 duration-300">
+                                <h3 class="text-2xl font-black mb-2 text-slate-800">API設定</h3>
+                                <p class="text-sm text-slate-500 mb-8 font-medium leading-relaxed">Gemini APIキーを入力してください。キーはブラウザ内にのみ保存されます。</p>
+                                <div class="relative mb-8">
+                                    <input type="password" value=${apiKey} onInput=${e => setApiKey(e.target.value)} 
+                                           placeholder="AIzaSy..." class="w-full px-5 py-4 bg-slate-100 border-none rounded-2xl focus:ring-4 focus:ring-sky-100 outline-none transition-all font-mono text-sm" />
+                                </div>
+                                <button onClick=${() => { set('miniscan-key', apiKey); setIsSettingsOpen(false); }} 
+                                        class="w-full bg-sky-500 text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-sky-100 active:scale-95 transition-transform">
+                                    保存して開始
+                                </button>
+                                <button onClick=${() => setIsSettingsOpen(false)} class="w-full py-4 text-slate-400 font-bold mt-2">閉じる</button>
+                            </div>
+                        </div>
+                    `}
+                </div>
+            `;
+        };
+
+        render(html`<${App} />`, document.getElementById('root'));
     </script>
 </body>
 </html>
