@@ -4,337 +4,198 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>MiniScan Pro</title>
-    
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      body { overscroll-behavior-y: contain; -webkit-tap-highlight-color: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-      .safe-top { padding-top: env(safe-area-inset-top); }
-      .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
-      .no-scrollbar::-webkit-scrollbar { display: none; }
-      .canvas-container { touch-action: none; }
-      .btn-active { color: #0ea5e9; }
-      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      .animate-spin-slow { animation: spin 2s linear infinite; }
+        body { overscroll-behavior-y: contain; -webkit-tap-highlight-color: transparent; font-family: -apple-system, system-ui, sans-serif; }
+        .safe-top { padding-top: env(safe-area-inset-top); }
+        .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+        .animate-spin { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen w-screen overflow-hidden">
     <div id="root" class="h-full w-full">
-        <div class="h-full w-full flex items-center justify-center flex-col gap-4">
+        <div id="loading-screen" class="h-full w-full flex items-center justify-center flex-col gap-4">
             <div class="w-12 h-12 border-4 border-sky-500 border-t-transparent rounded-full animate-spin"></div>
-            <p class="text-slate-500 font-medium">MiniScan を起動中...</p>
+            <p id="loading-text" class="text-slate-500 font-medium text-sm">システムを起動しています...</p>
         </div>
     </div>
 
     <script type="module">
-        // モダンなブラウザ向けの安定した読み込み
+        // ライブラリの読み込み
         import { h, render } from 'https://esm.sh/preact';
-        import { useState, useEffect, useRef, useMemo } from 'https://esm.sh/preact/hooks';
+        import { useState, useEffect, useRef } from 'https://esm.sh/preact/hooks';
         import htm from 'https://esm.sh/htm';
         const html = htm.bind(h);
 
-        // アイコンとライブラリ
-        import { 
-            Camera, Upload, ImagePlus, Check, X, Trash2, Edit2, Loader2, Sparkles, 
-            Download, FileDown, ArrowLeft, Wand2, Image as ImageIcon, Layers, Settings, ChevronRight 
-        } from 'https://esm.sh/lucide-react';
-        import { GoogleGenAI } from 'https://esm.sh/@google/genai';
-        import { jsPDF } from 'https://esm.sh/jspdf';
-        import { get, set } from 'https://esm.sh/idb-keyval';
+        // 重たいライブラリを分離
+        let GoogleGenAI, jsPDF, get, set;
+        try {
+            document.getElementById('loading-text').innerText = 'AIエンジンを準備中...';
+            const genAIMod = await import('https://esm.sh/@google/genai');
+            const jspdfMod = await import('https://esm.sh/jspdf');
+            const idbMod = await import('https://esm.sh/idb-keyval');
+            GoogleGenAI = genAIMod.GoogleGenAI;
+            jsPDF = jspdfMod.jsPDF;
+            get = idbMod.get;
+            set = idbMod.set;
+        } catch (e) {
+            document.getElementById('root').innerHTML = `<div class="p-10 text-red-500">通信エラー: ページを再読み込みしてください。<br/>${e.message}</div>`;
+        }
 
-        // --- 数学ユーティリティ: 歪み補正用 ---
-        const calcDistance = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        // --- SVGアイコン (外部読み込みなしで高速) ---
+        const Icon = ({ name }) => {
+            const icons = {
+                camera: html`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>`,
+                settings: html`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+                magic: html`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.21 1.21 0 0 0 1.72 0L21.64 5.36a1.21 1.21 0 0 0 0-1.72Z"/><path d="m14 7 3 3"/></svg>`,
+                trash: html`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>`
+            };
+            return icons[name] || null;
+        };
 
-        function getHomography(x0, y0, x1, y1, x2, y2, x3, y3, u0, v0, u1, v1, u2, v2, u3, v3) {
-            let a = [
-                [x0, y0, 1, 0, 0, 0, -x0*u0, -y0*u0], [x1, y1, 1, 0, 0, 0, -x1*u1, -y1*u1],
-                [x2, y2, 1, 0, 0, 0, -x2*u2, -y2*u2], [x3, y3, 1, 0, 0, 0, -x3*u3, -y3*u3],
-                [0, 0, 0, x0, y0, 1, -x0*v0, -y0*v0], [0, 0, 0, x1, y1, 1, -x1*v1, -y1*v1],
-                [0, 0, 0, x2, y2, 1, -x2*v2, -y2*v2], [0, 0, 0, x3, y3, 1, -x3*v3, -y3*v3]
-            ];
-            let b = [u0, u1, u2, u3, v0, v1, v2, v3];
-            for(let i=0; i<8; i++) {
-                let max = i;
-                for(let k=i+1; k<8; k++) if(Math.abs(a[k][i]) > Math.abs(a[max][i])) max = k;
-                [a[i], a[max]] = [a[max], a[i]]; [b[i], b[max]] = [b[max], b[i]];
-                for(let k=i+1; k<8; k++) {
-                    let c = -a[k][i]/a[i][i];
-                    for(let j=i; j<8; j++) a[k][j] = (i===j) ? 0 : a[k][j] + c * a[i][j];
-                    b[k] += c * b[i];
+        // --- ロジック ---
+        const solveH = (x, y, u, v) => {
+            let a = [];
+            for (let i = 0; i < 4; i++) {
+                a.push([x[i], y[i], 1, 0, 0, 0, -x[i] * u[i], -y[i] * u[i]]);
+                a.push([0, 0, 0, x[i], y[i], 1, -x[i] * v[i], -y[i] * v[i]]);
+            }
+            let b = [u[0], v[0], u[1], v[1], u[2], v[2], u[3], v[3]];
+            for (let i = 0; i < 8; i++) {
+                let m = i; for (let j = i + 1; j < 8; j++) if (Math.abs(a[j][i]) > Math.abs(a[m][i])) m = j;
+                [a[i], a[m]] = [a[m], a[i]]; [b[i], b[m]] = [b[m], b[i]];
+                for (let j = i + 1; j < 8; j++) {
+                    let c = -a[j][i] / a[i][i];
+                    for (let k = i; k < 8; k++) a[j][k] += c * a[i][k];
+                    b[j] += c * b[i];
                 }
             }
-            let res = new Array(8).fill(0);
-            for(let i=7; i>-1; i--) {
-                let s = 0; for(let j=i+1; j<8; j++) s += a[i][j] * res[j];
+            let res = new Array(8);
+            for (let i = 7; i >= 0; i--) {
+                let s = 0; for (let j = i + 1; j < 8; j++) s += a[i][j] * res[j];
                 res[i] = (b[i] - s) / a[i][i];
             }
             return [...res, 1];
-        }
+        };
 
-        const renderScannedImage = (img, corners, filterType) => {
+        const transform = (img, pts, filter) => {
+            const dist = (p1, p2) => Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
             const w = img.width, h = img.height;
-            const pts = corners.map(p => ({ x: p.x * w, y: p.y * h }));
-            const dW = Math.max(calcDistance(pts[0], pts[1]), calcDistance(pts[3], pts[2]));
-            const dH = Math.max(calcDistance(pts[0], pts[3]), calcDistance(pts[1], pts[2]));
-            
+            const src = pts.map(p => ({ x: p.x * w, y: p.y * h }));
+            const dW = Math.max(dist(src[0], src[1]), dist(src[3], src[2]));
+            const dH = Math.max(dist(src[0], src[3]), dist(src[1], src[2]));
             const canvas = document.createElement('canvas'); canvas.width = dW; canvas.height = dH;
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            
-            const srcCanvas = document.createElement('canvas'); srcCanvas.width = w; srcCanvas.height = h;
-            const srcCtx = srcCanvas.getContext('2d'); srcCtx.drawImage(img, 0, 0);
-            const sData = srcCtx.getImageData(0, 0, w, h).data;
-            const dstData = ctx.createImageData(dW, dH);
-            const dData = dstData.data;
-
-            const H = getHomography(0, 0, dW, 0, dW, dH, 0, dH, pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y, pts[3].x, pts[3].y);
-
+            const sCanvas = document.createElement('canvas'); sCanvas.width = w; sCanvas.height = h;
+            const sCtx = sCanvas.getContext('2d'); sCtx.drawImage(img, 0, 0);
+            const sD = sCtx.getImageData(0, 0, w, h).data;
+            const dD = ctx.createImageData(dW, dH);
+            const H = solveH([0, dW, dW, 0], [0, 0, dH, dH], src.map(p => p.x), src.map(p => p.y));
             for (let y = 0; y < dH; y++) {
                 for (let x = 0; x < dW; x++) {
-                    const div = H[6] * x + H[7] * y + 1;
-                    const u = (H[0] * x + H[1] * y + H[2]) / div;
-                    const v = (H[3] * x + H[4] * y + H[5]) / div;
+                    const z = H[6] * x + H[7] * y + 1;
+                    const u = Math.floor((H[0] * x + H[1] * y + H[2]) / z), v = Math.floor((H[3] * x + H[4] * y + H[5]) / z);
                     if (u >= 0 && u < w && v >= 0 && v < h) {
-                        const sIdx = (Math.floor(v) * w + Math.floor(u)) * 4;
-                        const dIdx = (y * dW + x) * 4;
-                        let r = sData[sIdx], g = sData[sIdx+1], b = sData[sIdx+2];
-
-                        if (filterType === 'magic') {
-                            const luma = 0.3 * r + 0.59 * g + 0.11 * b;
-                            r = Math.min(255, r * 1.5 - 50);
-                            g = Math.min(255, g * 1.5 - 50);
-                            b = Math.min(255, b * 1.5 - 50);
-                        } else if (filterType === 'bw') {
-                            const luma = 0.3 * r + 0.59 * g + 0.11 * b;
-                            const res = luma > 130 ? 255 : 0;
-                            r = g = b = res;
-                        }
-                        dData[dIdx] = r; dData[dIdx+1] = g; dData[dIdx+2] = b; dData[dIdx+3] = 255;
+                        const si = (v * w + u) * 4, di = (y * Math.floor(dW) + x) * 4;
+                        let r = sD[si], g = sD[si + 1], b = sD[si + 2];
+                        if (filter === 'magic') { r = Math.min(255, r * 1.4 - 30); g = Math.min(255, g * 1.4 - 30); b = Math.min(255, b * 1.4 - 30); }
+                        else if (filter === 'bw') { const l = r * 0.3 + g * 0.59 + b * 0.11; r = g = b = l > 128 ? 255 : 0; }
+                        dD[di] = r; dD[di + 1] = g; dD[di + 2] = b; dD[di + 3] = 255;
                     }
                 }
             }
-            ctx.putImageData(dstData, 0, 0);
-            return canvas.toDataURL('image/jpeg', 0.85);
+            ctx.putImageData(dD, 0, 0); return canvas.toDataURL('image/jpeg', 0.8);
         };
 
-        // --- AI ロジック: Gemini 1.5 Flash ---
-        async function runEdgeDetection(base64, apiKey) {
-            const fallback = [{x:0.1,y:0.1},{x:0.9,y:0.1},{x:0.9,y:0.9},{x:0.1,y:0.9}];
-            if (!apiKey) return fallback;
-            try {
-                const genAI = new GoogleGenAI(apiKey);
-                const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-                const result = await model.generateContent([
-                    "Identify the 4 corners of the document in the image. Return ONLY a JSON object: {\"corners\": [{\"x\": 0.12, \"y\": 0.05}, ...]} coordinates between 0 and 1. Order: Top-Left, Top-Right, Bottom-Right, Bottom-Left.",
-                    { inlineData: { mimeType: "image/jpeg", data: base64.split(',')[1] } }
-                ]);
-                const text = await result.response.text();
-                const data = JSON.parse(text.match(/\{.*\}/s)[0]);
-                return data.corners || fallback;
-            } catch (err) {
-                console.error("AI Error:", err);
-                return fallback;
-            }
-        }
-
-        // --- コンポーネント: 消しゴムマジック ---
-        const MagicEraser = ({ imageUrl, onSave, onCancel }) => {
-            const canvasRef = useRef(null);
-            const [isDrawing, setIsDrawing] = useState(false);
-            const [bgFill, setBgFill] = useState('#ffffff');
-
-            useEffect(() => {
-                const img = new Image();
-                img.onload = () => {
-                    const c = canvasRef.current; c.width = img.width; c.height = img.height;
-                    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0);
-                    const sample = ctx.getImageData(img.width/2, img.height/2, 1, 1).data;
-                    setBgFill(`rgb(${sample[0]},${sample[1]},${sample[2]})`);
-                };
-                img.src = imageUrl;
-            }, [imageUrl]);
-
-            const handleDraw = (e) => {
-                if(!isDrawing) return;
-                const rect = canvasRef.current.getBoundingClientRect();
-                const touch = e.touches ? e.touches[0] : e;
-                const x = (touch.clientX - rect.left) * (canvasRef.current.width / rect.width);
-                const y = (touch.clientY - rect.top) * (canvasRef.current.height / rect.height);
-                const ctx = canvasRef.current.getContext('2d');
-                ctx.fillStyle = bgFill; ctx.beginPath(); ctx.arc(x, y, 35, 0, Math.PI*2); ctx.fill();
-            };
-
-            return html`
-                <div class="fixed inset-0 z-50 bg-black flex flex-col">
-                    <div class="p-4 flex justify-between items-center bg-slate-900 text-white">
-                        <button onClick=${onCancel}><${X}/></button>
-                        <span class="font-bold">指消しツール</span>
-                        <button onClick=${() => onSave(canvasRef.current.toDataURL('image/jpeg'))} class="text-sky-400"><${Check}/></button>
-                    </div>
-                    <div class="flex-1 flex items-center justify-center p-2 canvas-container"
-                         onMouseDown=${() => setIsDrawing(true)} onMouseMove=${handleDraw} onMouseUp=${() => setIsDrawing(false)}
-                         onTouchStart=${() => setIsDrawing(true)} onTouchMove=${handleDraw} onTouchEnd=${() => setIsDrawing(false)}>
-                        <canvas ref=${canvasRef} class="max-w-full max-h-full shadow-2xl bg-white" />
-                    </div>
-                </div>
-            `;
-        };
-
-        // --- メインアプリ ---
+        // --- アプリ本体 ---
         const App = () => {
             const [pages, setPages] = useState([]);
-            const [apiKey, setApiKey] = useState("");
+            const [apiKey, setApiKey] = useState('');
             const [editId, setEditId] = useState(null);
-            const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+            const [showSettings, setShowSettings] = useState(false);
             const [loading, setLoading] = useState(false);
-            const [eraserMode, setEraserMode] = useState(false);
 
             useEffect(() => {
-                get('miniscan-key').then(k => k && setApiKey(k));
-                get('miniscan-data').then(d => d && setPages(d));
+                get('miniscan-k').then(v => v && setApiKey(v));
+                get('miniscan-d').then(v => v && setPages(v));
             }, []);
+            useEffect(() => { set('miniscan-d', pages); }, [pages]);
 
-            useEffect(() => { set('miniscan-data', pages); }, [pages]);
-
-            const onFileSelect = async (e) => {
-                if(!apiKey) { setIsSettingsOpen(true); return; }
+            const handleFile = async (e) => {
+                if (!apiKey) { setShowSettings(true); return; }
                 setLoading(true);
                 const files = Array.from(e.target.files);
-                for(let file of files) {
-                    const base64 = await new Promise(r => {
-                        const rd = new FileReader(); rd.onload = () => r(rd.result); rd.readAsDataURL(file);
-                    });
-                    const corners = await runEdgeDetection(base64, apiKey);
-                    const img = new Image(); img.src = base64;
-                    await new Promise(r => img.onload = r);
-                    const preview = renderScannedImage(img, corners, 'original');
-                    setPages(prev => [...prev, { id: Math.random().toString(36), original: base64, preview, corners, filter: 'original' }]);
+                for (let f of files) {
+                    const base64 = await new Promise(r => { const rd = new FileReader(); rd.onload = () => r(rd.result); rd.readAsDataURL(f); });
+                    const ai = new GoogleGenAI(apiKey).getGenerativeModel({ model: "gemini-1.5-flash" });
+                    const res = await ai.generateContent([{ text: "JSON: {corners:[{x,y},...]}" }, { inlineData: { mimeType: "image/jpeg", data: base64.split(',')[1] } }]);
+                    const pts = JSON.parse(res.response.text().match(/\{.*\}/s)[0]).corners;
+                    const img = new Image(); img.src = base64; await new Promise(r => img.onload = r);
+                    setPages(p => [...p, { id: Math.random(), original: base64, preview: transform(img, pts, 'original'), corners: pts, filter: 'original' }]);
                 }
+                setLoading(true); // 表示更新
                 setLoading(false);
-            };
-
-            const handleFilter = (type) => {
-                const active = pages.find(p => p.id === editId);
-                const img = new Image();
-                img.onload = () => {
-                    const newPreview = renderScannedImage(img, active.corners, type);
-                    setPages(prev => prev.map(p => p.id === editId ? { ...p, preview: newPreview, filter: type } : p));
-                };
-                img.src = active.original;
-            };
-
-            const downloadPDF = () => {
-                const pdf = new jsPDF();
-                pages.forEach((p, i) => {
-                    if(i > 0) pdf.addPage();
-                    pdf.addImage(p.preview, 'JPEG', 0, 0, 210, 297);
-                });
-                pdf.save("myscan.pdf");
             };
 
             const active = pages.find(p => p.id === editId);
 
-            if (eraserMode && active) {
-                return html`<${MagicEraser} imageUrl=${active.preview} onCancel=${() => setEraserMode(false)} onSave=${(url) => {
-                    setPages(prev => prev.map(p => p.id === editId ? { ...p, preview: url } : p));
-                    setEraserMode(false);
-                }} />`;
-            }
-
-            if (editId && active) {
-                return html`
-                    <div class="flex flex-col h-screen bg-slate-950 text-white">
-                        <div class="p-4 pt-safe-top flex justify-between items-center bg-slate-900/50">
-                            <button onClick=${() => setEditId(null)}><${ArrowLeft}/></button>
-                            <span class="font-bold">書類を編集</span>
-                            <div class="w-8"></div>
-                        </div>
-                        <div class="flex-1 flex items-center justify-center p-4">
-                            <img src=${active.preview} class="max-h-full shadow-2xl border border-white/10" />
-                        </div>
-                        <div class="p-6 pb-12 bg-slate-900 flex justify-around items-center safe-bottom">
-                            ${[
-                                { id: 'original', label: '原画', icon: ImageIcon },
-                                { id: 'magic', label: '強調', icon: Sparkles },
-                                { id: 'bw', label: '白黒', icon: FileDown },
-                                { id: 'eraser', label: '消す', icon: Wand2 }
-                            ].map(btn => html`
-                                <button key=${btn.id} class="flex flex-col items-center gap-1 ${active.filter === btn.id ? 'text-sky-400' : 'text-slate-500'}"
-                                        onClick=${() => btn.id === 'eraser' ? setEraserMode(true) : handleFilter(btn.id)}>
-                                    <div class="p-3 bg-slate-800 rounded-2xl"><${btn.icon} size=${24} /></div>
-                                    <span class="text-[10px] font-bold">${btn.label}</span>
-                                </button>
-                            `)}
-                        </div>
-                    </div>
-                `;
-            }
-
             return html`
-                <div class="flex flex-col h-screen bg-slate-50">
-                    <header class="bg-white/80 backdrop-blur-md p-4 pt-safe-top shadow-sm flex justify-between items-center z-10">
-                        <div class="flex items-center gap-2 text-sky-600">
-                            <${Layers} fill="currentColor" size=${24} />
-                            <h1 class="text-xl font-black tracking-tighter">MiniScan Pro</h1>
-                        </div>
-                        <div class="flex gap-3">
-                            <button onClick=${() => setIsSettingsOpen(true)} class="p-2 ${!apiKey ? 'text-red-500 animate-pulse bg-red-50' : 'text-slate-400'} rounded-full">
-                                <${Settings} size=${22} />
-                            </button>
-                            ${pages.length > 0 && html`
-                                <button onClick=${downloadPDF} class="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 active:scale-95 transition-transform">
-                                    <${Download} size=${16} /> 保存
-                                </button>
-                            `}
+                <div class="flex flex-col h-screen bg-white">
+                    <header class="p-4 pt-safe-top flex justify-between items-center bg-white border-b">
+                        <h1 class="text-xl font-black text-sky-600">MiniScan Pro</h1>
+                        <div class="flex gap-4">
+                            <button onClick=${() => setShowSettings(true)} class="text-slate-400"><${Icon} name="settings" /></button>
+                            ${pages.length > 0 && html`<button onClick=${() => {
+                                const doc = new jsPDF(); pages.forEach((p, i) => { if (i > 0) doc.addPage(); doc.addImage(p.preview, 'JPEG', 0, 0, 210, 297); }); doc.save("scan.pdf");
+                            }} class="bg-sky-500 text-white px-4 py-1 rounded-full text-xs font-bold">PDF保存</button>`}
                         </div>
                     </header>
-
-                    <main class="flex-1 overflow-y-auto p-4 pb-32 no-scrollbar">
-                        ${pages.length === 0 ? html`
-                            <div class="h-full flex flex-col items-center justify-center text-slate-300">
-                                <div class="w-32 h-32 bg-slate-100 rounded-full flex items-center justify-center mb-6">
-                                    <${ImagePlus} size=${48} />
+                    <main class="flex-1 overflow-y-auto p-4 pb-24">
+                        <div class="grid grid-cols-2 gap-4">
+                            ${pages.map((p, i) => html`
+                                <div class="relative aspect-[3/4] bg-slate-100 rounded-xl overflow-hidden shadow-sm border border-slate-200" onClick=${() => setEditId(p.id)}>
+                                    <img src=${p.preview} class="w-full h-full object-cover" />
+                                    <div class="absolute top-2 left-2 bg-black/50 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full">${i + 1}</div>
+                                    <button class="absolute top-2 right-2 p-1 text-red-500 bg-white/80 rounded-lg shadow-sm" onClick=${(e) => { e.stopPropagation(); setPages(ps => ps.filter(x => x.id !== p.id)); }}>
+                                        <${Icon} name="trash" />
+                                    </button>
                                 </div>
-                                <p class="font-bold">書類をスキャンしてください</p>
-                                <p class="text-xs mt-1 text-slate-400 text-center">右上の設定からGemini APIキーを入力して起動します</p>
-                            </div>
-                        ` : html`
-                            <div class="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                                ${pages.map((p, idx) => html`
-                                    <div key=${p.id} class="relative group aspect-[3/4.2] bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden ring-offset-4 ring-sky-500 active:ring-2 transition-all">
-                                        <img src=${p.preview} class="w-full h-full object-cover" onClick=${() => setEditId(p.id)} />
-                                        <div class="absolute top-2 left-2 bg-black/40 backdrop-blur-md text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full">${idx + 1}</div>
-                                        <button class="absolute top-2 right-2 p-1.5 bg-red-500/90 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
-                                                onClick=${(e) => { e.stopPropagation(); setPages(prev => prev.filter(x => x.id !== p.id)); }}>
-                                            <${Trash2} size=${14} />
-                                        </button>
-                                    </div>
-                                `)}
-                            </div>
-                        `}
+                            `)}
+                        </div>
                     </main>
-
-                    <div class="fixed bottom-10 left-0 right-0 flex justify-center pointer-events-none safe-bottom">
-                        <label class="w-20 h-20 bg-sky-500 text-white rounded-full shadow-2xl shadow-sky-200 flex items-center justify-center cursor-pointer active:scale-90 transition-transform pointer-events-auto border-4 border-white">
-                            ${loading ? html`<${Loader2} class="animate-spin" size=${32} />` : html`<${Camera} size=${36} />`}
-                            <input type="file" multiple accept="image/*" class="hidden" onChange=${onFileSelect} disabled=${loading} />
+                    <div class="fixed bottom-10 left-0 right-0 flex justify-center safe-bottom">
+                        <label class="w-20 h-20 bg-sky-500 text-white rounded-full shadow-2xl flex items-center justify-center border-4 border-white active:scale-90 transition-transform">
+                            ${loading ? html`<div class="w-8 h-8 border-4 border-white border-t-transparent rounded-full animate-spin"></div>` : html`<${Icon} name="camera" />`}
+                            <input type="file" multiple accept="image/*" class="hidden" onChange=${handleFile} />
                         </label>
                     </div>
 
-                    ${isSettingsOpen && html`
-                        <div class="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-6 animate-in fade-in duration-200">
-                            <div class="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-8 shadow-2xl animate-in slide-in-from-bottom-10 duration-300">
-                                <h3 class="text-2xl font-black mb-2 text-slate-800">API設定</h3>
-                                <p class="text-sm text-slate-500 mb-8 font-medium leading-relaxed">Gemini APIキーを入力してください。キーはブラウザ内にのみ保存されます。</p>
-                                <div class="relative mb-8">
-                                    <input type="password" value=${apiKey} onInput=${e => setApiKey(e.target.value)} 
-                                           placeholder="AIzaSy..." class="w-full px-5 py-4 bg-slate-100 border-none rounded-2xl focus:ring-4 focus:ring-sky-100 outline-none transition-all font-mono text-sm" />
-                                </div>
-                                <button onClick=${() => { set('miniscan-key', apiKey); setIsSettingsOpen(false); }} 
-                                        class="w-full bg-sky-500 text-white py-5 rounded-2xl font-black text-lg shadow-xl shadow-sky-100 active:scale-95 transition-transform">
-                                    保存して開始
-                                </button>
-                                <button onClick=${() => setIsSettingsOpen(false)} class="w-full py-4 text-slate-400 font-bold mt-2">閉じる</button>
+                    ${editId && active && html`
+                        <div class="fixed inset-0 z-50 bg-slate-900 flex flex-col">
+                            <div class="p-4 pt-safe-top flex justify-between text-white"><button onClick=${() => setEditId(null)} class="p-2">✕</button><span class="font-bold">編集</span><div class="w-10"></div></div>
+                            <div class="flex-1 flex items-center justify-center p-4"><img src=${active.preview} class="max-h-full shadow-2xl" /></div>
+                            <div class="p-8 bg-slate-800 flex justify-around safe-bottom">
+                                ${['original', 'magic', 'bw'].map(f => html`
+                                    <button class="flex flex-col items-center gap-2 ${active.filter === f ? 'text-sky-400' : 'text-slate-400'}" onClick=${() => {
+                                        const img = new Image(); img.onload = () => { setPages(ps => ps.map(p => p.id === editId ? { ...p, preview: transform(img, active.corners, f), filter: f } : p)); }; img.src = active.original;
+                                    }}>
+                                        <div class="p-3 bg-slate-700 rounded-xl"><${Icon} name=${f === 'magic' ? 'magic' : 'camera'} /></div>
+                                        <span class="text-[10px] uppercase font-bold">${f}</span>
+                                    </button>
+                                `)}
+                            </div>
+                        </div>
+                    `}
+
+                    ${showSettings && html`
+                        <div class="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
+                            <div class="bg-white rounded-3xl w-full max-w-sm p-8 shadow-2xl">
+                                <h2 class="text-2xl font-black mb-4">API設定</h2>
+                                <input type="password" value=${apiKey} onInput=${e => setApiKey(e.target.value)} placeholder="AIzaSy..." class="w-full p-4 bg-slate-100 rounded-2xl mb-6 outline-none" />
+                                <button onClick=${() => { set('miniscan-k', apiKey); setShowSettings(false); }} class="w-full bg-sky-500 text-white py-4 rounded-2xl font-black">保存する</button>
+                                <button onClick=${() => setShowSettings(false)} class="w-full mt-4 text-slate-400 font-bold">閉じる</button>
                             </div>
                         </div>
                     `}
